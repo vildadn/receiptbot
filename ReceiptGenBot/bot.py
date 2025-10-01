@@ -2,6 +2,7 @@ import asyncio
 import json
 import datetime
 import os
+from dotenv import load_dotenv
 
 import hikari
 import lightbulb
@@ -10,6 +11,7 @@ from lightbulb.ext import tasks
 from receiptgen import database, ticketsystem, utils
 from aiohttp import web
 
+load_dotenv()
 token = os.getenv("BOT_KEY")
 
 bot = lightbulb.BotApp(token=token,
