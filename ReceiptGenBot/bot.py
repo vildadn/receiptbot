@@ -10,12 +10,14 @@ from aiohttp import web
 
 token = os.getenv("BOT_KEY")
 
-bot = lightbulb.BotApp(token=token,
-                       intents=hikari.Intents.GUILD_MEMBERS | hikari.Intents.MESSAGE_CONTENT | hikari.Intents.GUILDS | hikari.Intents.ALL_MESSAGES,
-                       default_enabled_guilds=[1255986026669674616],
-                       prefix="!")
+bot = lightbulb.BotApp(
+    token=token,
+    intents=hikari.Intents.ALL_MESSAGES | hikari.Intents.GUILD_MEMBERS | hikari.Intents.MESSAGE_CONTENT | hikari.Intents.GUILDS,
+    default_enabled_guilds=[1255986026669674616],
+    prefix="!"
+)
 
-bot.d.miru = miru.Client(bot, ignore_unknown_interactions=True)
+miru.install(bot)
 routes = web.RouteTableDef()
 
 # Store task references to prevent them from being garbage collected
