@@ -5,7 +5,6 @@ import os
 import hikari
 import lightbulb
 import miru
-from lightbulb.ext import tasks
 from receiptgen import database, utils
 from aiohttp import web
 
@@ -14,12 +13,75 @@ token = os.getenv("BOT_KEY")
 bot = lightbulb.BotApp(token=token,
                        intents=hikari.Intents.GUILD_MEMBERS | hikari.Intents.MESSAGE_CONTENT | hikari.Intents.GUILDS | hikari.Intents.ALL_MESSAGES,
                        default_enabled_guilds=[1255986026669674616],
-                       prefix="!"
-                       )
+                       prefix="!")
 
 bot.d.miru = miru.Client(bot, ignore_unknown_interactions=True)
 routes = web.RouteTableDef()
-tasks.load(bot)
+
+# Store task references to prevent them from being garbage collected
+bot.d.background_tasks = []
+
+# Status message rotation variables
+status_messages = ["Check my Bio", "Generating Receipts"]
+bot.d.status_index = 0
+
+
+async def change_status_task():
+    """Periodic task to change bot status every 20 seconds"""
+    while True:
+        try:
+            await asyncio.sleep(20)  # Wait 20 seconds
+            
+            await bot.update_presence(
+                status=hikari.Status.ONLINE,
+                activity=hikari.Activity(
+                    name=status_messages[bot.d.status_index],
+                    type=hikari.ActivityType.WATCHING,
+                ),
+            )
+            
+            # Rotate to next status message
+            if bot.d.status_index < len(status_messages) - 1:
+                bot.d.status_index += 1
+            else:
+                bot.d.status_index = 0
+                
+        except Exception as e:
+            print(f"Error in change_status_task: {e}")
+
+
+async def remove_access_roles_task():
+    """Periodic task to remove expired access roles every minute"""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Wait 1 minute
+            
+            guild_db = database.GuildAPI()
+
+            for guild_member in await guild_db.members_without_access():
+                try:
+                    member_guild = guild_member.get("guild")
+                    guild_db = database.GuildAPI(guild_id=member_guild)
+                    guild_data = await guild_db.get_guild()
+
+                    if guild_data.get("access_role"):
+                        try:
+                            await bot.rest.remove_role_from_member(
+                                guild=guild_data["guild_id"],
+                                role=guild_data["access_role"],
+                                user=guild_member.get("member")
+                            )
+                        except hikari.ForbiddenError:
+                            print(f"Couldn't remove role for member {guild_member.get('member')}")
+
+                    asyncio.create_task(access_notif(state="removed", user_id=guild_member.get("member"), guild_data=guild_data))
+                    
+                except Exception as e:
+                    print(f"Error removing access for member {guild_member.get('member')}: {e}")
+                    
+        except Exception as e:
+            print(f"Error in remove_access_roles_task: {e}")
+
 
 @bot.listen(hikari.GuildJoinEvent)
 async def on_join(event: hikari.GuildJoinEvent):
@@ -31,6 +93,8 @@ async def on_join(event: hikari.GuildJoinEvent):
     if channel is None:
         return
 
+    config = utils.get_config()
+    
     embed = hikari.Embed(
         title="Setup Info",
         description="Before you can start using this bot it needs to be activated as\n"
@@ -51,6 +115,7 @@ async def on_join(event: hikari.GuildJoinEvent):
 
     await bot.rest.create_message(channel=channel, embed=embed)
 
+
 @bot.listen(hikari.StartedEvent)
 async def on_start(event: hikari.StartedEvent):
     await bot.update_presence(
@@ -64,10 +129,20 @@ async def on_start(event: hikari.StartedEvent):
     await runner.setup()
     webserver = web.TCPSite(runner, host='localhost', port=6000)
     await webserver.start()
+    
+    # Start background tasks
+    task1 = asyncio.create_task(change_status_task())
+    task2 = asyncio.create_task(remove_access_roles_task())
+    
+    # Store references to prevent garbage collection
+    bot.d.background_tasks.extend([task1, task2])
+    
+    print("Bot started successfully!")
+    print(f"Background tasks started: {len(bot.d.background_tasks)} tasks running")
+
 
 @bot.listen(lightbulb.CommandErrorEvent)
 async def on_error(event: lightbulb.CommandErrorEvent) -> None:
-
     exception = event.exception.__cause__ or event.exception
 
     if isinstance(exception, lightbulb.CommandIsOnCooldown):
@@ -81,6 +156,7 @@ async def on_error(event: lightbulb.CommandErrorEvent) -> None:
 
 config = utils.get_config()
 
+
 async def access_notif(state, user_id, guild_data):
     member = await bot.rest.fetch_member(guild=guild_data.get("guild_id"), user=user_id)
     notification_channel = guild_data.get("notification_channel")
@@ -89,14 +165,12 @@ async def access_notif(state, user_id, guild_data):
         return
 
     if state == "added":
-
         embed = hikari.Embed(
             title="Access Added",
             description=f"Thank you for purchasing {member.mention}"
                         f"\nyou can now use the receipt generator by typing\n /menu or /generator",
             color=config["color"]
         )
-
 
     elif state == "removed":
         embed = hikari.Embed(
@@ -110,7 +184,15 @@ async def access_notif(state, user_id, guild_data):
     else:
         return None
 
-    await bot.rest.create_message(embed=embed, channel=notification_channel)
+    try:
+        await bot.rest.create_message(embed=embed, channel=notification_channel, user_mentions=True)
+        mention = await bot.rest.create_message(content=member.mention, channel=notification_channel, user_mentions=True)
+        await asyncio.sleep(1.5)
+        await mention.delete()
+    except hikari.ForbiddenError:
+        print(f"Cannot send notification to channel {notification_channel}")
+    except Exception as e:
+        print(f"Error sending notification: {e}")
 
 
 @routes.post("/add-access-role")
@@ -124,60 +206,37 @@ async def add_access_role(request):
     guild_data = await guild_db.get_guild()
 
     if guild_data.get("access_role"):
-        asyncio.create_task(bot.rest.add_role_to_member(
-            guild=int(data["guild_id"]),
-            user=int(data["user_id"]),
-            role=guild_data["access_role"],
-            )
-        )
+        try:
+            asyncio.create_task(bot.rest.add_role_to_member(
+                guild=int(data["guild_id"]),
+                user=int(data["user_id"]),
+                role=guild_data["access_role"],
+            ))
+        except Exception as e:
+            print(f"Error adding role: {e}")
+            
     asyncio.create_task(access_notif("added", int(data["user_id"]), guild_data))
 
     return web.Response(text="success")
+
 
 app = web.Application()
 app.add_routes(routes)
 runner = web.AppRunner(app)
 
+
 @bot.listen()
 async def cleanup_webserver(_: hikari.StoppingEvent):
+    print("Shutting down bot...")
+    
+    # Cancel background tasks
+    for task in bot.d.background_tasks:
+        task.cancel()
+    
+    print(f"Cancelled {len(bot.d.background_tasks)} background tasks")
+    
     await runner.cleanup()
-
-status_messages = ["Check my Bio", "Generating Receipts"]
-sm_pos = 0
-@tasks.task(s=20, auto_start=True)
-async def change_status():
-    global sm_pos
-    await bot.update_presence(
-        status=hikari.Status.ONLINE,
-        activity=hikari.Activity(
-            name=status_messages[sm_pos],
-            type=hikari.ActivityType.WATCHING,
-        ),
-    )
-    if sm_pos < len(status_messages)-1:
-        sm_pos += 1
-    else: sm_pos = 0
-
-@tasks.task(m=1, auto_start=True)
-async def remove_access_roles():
-    guild_db = database.GuildAPI()
-
-    for guild_member in await guild_db.members_without_access():
-
-        member_guild = guild_member.get("guild")
-        guild_db = database.GuildAPI(guild_id=member_guild)
-        guild_data = await guild_db.get_guild()
-
-        if guild_data.get("access_role"):
-            try:
-                await bot.rest.remove_role_from_member(
-                    guild=guild_data["guild_id"],
-                    role=guild_data["access_role"],
-                    user=guild_member.get("member")
-                )
-            except hikari.ForbiddenError: print("couldn't remove role for member")
-
-        asyncio.create_task(access_notif(state="removed", user_id=guild_member.get("member"), guild_data=guild_data))
+    print("Webserver cleaned up successfully")
 
 
 bot.load_extensions_from("./cogs_rent/")
