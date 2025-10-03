@@ -38,5 +38,5 @@ async def add_access(ctx: lightbulb.Context):
     else:
         await response.edit(result["error"])
 
-def load(bot: lightbulb.BotApp):
-    bot.add_plugin(plugin)
+def loader(client):
+    client.add_plugin(plugin)
