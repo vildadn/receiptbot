@@ -485,5 +485,5 @@ async def main_menu(ctx: lightbulb.Context):
     client.start_view(my_menu)
 
 
-def load(bot: lightbulb.BotApp):
-    bot.add_plugin(plugin)
+def loader(client):
+    client.add_plugin(plugin)
