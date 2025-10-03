@@ -135,5 +135,5 @@ async def setup_channel(ctx: lightbulb.Context):
         await ctx.respond(result["error"], flags=hikari.MessageFlag.EPHEMERAL)
 
 
-def load(bot: lightbulb.BotApp):
-    bot.add_plugin(plugin)
+def loader(client):
+    client.add_plugin(plugin)
