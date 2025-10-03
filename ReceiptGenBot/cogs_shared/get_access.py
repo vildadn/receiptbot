@@ -136,5 +136,5 @@ async def get_user_access(ctx: lightbulb.Context):
 
     await ctx.respond(embed=embed, flags=hikari.MessageFlag.EPHEMERAL)
 
-def load(bot: lightbulb.BotApp):
-    bot.add_plugin(plugin)
+def loader(client):
+    client.add_plugin(plugin)
