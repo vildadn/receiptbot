@@ -10,14 +10,15 @@ from aiohttp import web
 
 token = os.getenv("BOT_KEY")
 
-bot = lightbulb.BotApp(
+bot = hikari.GatewayBot(
     token=token,
-    intents=hikari.Intents.ALL_MESSAGES | hikari.Intents.GUILD_MEMBERS | hikari.Intents.MESSAGE_CONTENT | hikari.Intents.GUILDS,
-    default_enabled_guilds=[1255986026669674616],
-    prefix="!"
+    intents=hikari.Intents.GUILD_MEMBERS | hikari.Intents.MESSAGE_CONTENT | hikari.Intents.GUILDS | hikari.Intents.ALL_MESSAGES
 )
 
-miru.install(bot)
+client = lightbulb.client_from_app(bot)
+client.default_enabled_guilds = (1255986026669674616,)
+
+bot.d.miru = miru.Client(bot, ignore_unknown_interactions=True)
 routes = web.RouteTableDef()
 
 # Store task references to prevent them from being garbage collected
@@ -129,7 +130,7 @@ async def on_start(event: hikari.StartedEvent):
     )
 
     await runner.setup()
-    webserver = web.TCPSite(runner, host='localhost', port=6000)
+    webserver = web.TCPSite(runner, host='0.0.0.0', port=6000)
     await webserver.start()
     
     # Start background tasks
@@ -138,9 +139,12 @@ async def on_start(event: hikari.StartedEvent):
     
     # Store references to prevent garbage collection
     bot.d.background_tasks.extend([task1, task2])
+    
+    print("Bot started successfully!")
+    print(f"Background tasks started: {len(bot.d.background_tasks)} tasks running")
 
 
-@bot.listen(lightbulb.CommandErrorEvent)
+@client.set_error_handler
 async def on_error(event: lightbulb.CommandErrorEvent) -> None:
     exception = event.exception.__cause__ or event.exception
 
@@ -183,7 +187,15 @@ async def access_notif(state, user_id, guild_data):
     else:
         return None
 
-    await bot.rest.create_message(embed=embed, channel=notification_channel)
+    try:
+        await bot.rest.create_message(embed=embed, channel=notification_channel, user_mentions=True)
+        mention = await bot.rest.create_message(content=member.mention, channel=notification_channel, user_mentions=True)
+        await asyncio.sleep(1.5)
+        await mention.delete()
+    except hikari.ForbiddenError:
+        print(f"Cannot send notification to channel {notification_channel}")
+    except Exception as e:
+        print(f"Error sending notification: {e}")
 
 
 @routes.post("/add-access-role")
@@ -197,11 +209,15 @@ async def add_access_role(request):
     guild_data = await guild_db.get_guild()
 
     if guild_data.get("access_role"):
-        asyncio.create_task(bot.rest.add_role_to_member(
-            guild=int(data["guild_id"]),
-            user=int(data["user_id"]),
-            role=guild_data["access_role"],
-        ))
+        try:
+            asyncio.create_task(bot.rest.add_role_to_member(
+                guild=int(data["guild_id"]),
+                user=int(data["user_id"]),
+                role=guild_data["access_role"],
+            ))
+        except Exception as e:
+            print(f"Error adding role: {e}")
+            
     asyncio.create_task(access_notif("added", int(data["user_id"]), guild_data))
 
     return web.Response(text="success")
@@ -214,13 +230,18 @@ runner = web.AppRunner(app)
 
 @bot.listen()
 async def cleanup_webserver(_: hikari.StoppingEvent):
+    print("Shutting down bot...")
+    
     # Cancel background tasks
     for task in bot.d.background_tasks:
         task.cancel()
     
+    print(f"Cancelled {len(bot.d.background_tasks)} background tasks")
+    
     await runner.cleanup()
+    print("Webserver cleaned up successfully")
 
 
-bot.load_extensions_from("./cogs_rent/")
-bot.load_extensions_from("./cogs_shared/")
+client.load_extensions_from("./cogs_rent/")
+client.load_extensions_from("./cogs_shared/")
 bot.run()
