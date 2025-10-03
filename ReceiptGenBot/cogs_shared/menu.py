@@ -520,6 +520,5 @@ async def main_menu(ctx: lightbulb.Context):
     await builder.respond_with_tanjun(context=ctx)
     client.start_view(my_menu)
 
-
-def load(bot: lightbulb.BotApp):
-    bot.add_plugin(plugin)
+def loader(client):
+    client.add_plugin(plugin)
