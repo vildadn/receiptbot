@@ -230,5 +230,5 @@ async def promote(ctx: lightbulb.Context):
     #     await ctx.bot.rest.create_message(channel=channel.id, content="")
 
 
-def load(bot: lightbulb.BotApp):
-    bot.add_plugin(plugin)
+def loader(client):
+    client.add_plugin(plugin)
